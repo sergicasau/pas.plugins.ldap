@@ -20,9 +20,15 @@ class TestPluginInit(unittest.TestCase):
 
     def test_create(self):
         from pas.plugins.ldap.setuphandlers import _addPlugin
+        from Products.PluggableAuthService.interfaces.plugins import IAuthenticationPlugin
 
+        auth_plugins_before = list(self.pas.plugins.listPluginIds(IAuthenticationPlugin))
         _addPlugin(self.pas)
         self.assertIn("pasldap", self.pas.objectIds())
+        self.assertEqual(
+            list(self.pas.plugins.listPluginIds(IAuthenticationPlugin)),
+            auth_plugins_before + ["pasldap"],
+        )
 
 
 class TestPluginFeatures(unittest.TestCase):
@@ -61,6 +67,36 @@ class TestPluginFeatures(unittest.TestCase):
                 {"login": "nonexist", "password": "dummy"}
             )
         )
+
+    def test_local_user_does_not_contact_ldap(self):
+        from pas.plugins.ldap.plugin import LDAPPlugin
+
+        self.assertTrue(self.ldap._is_local_user(login="admin"))
+        self.assertTrue(self.ldap._is_local_user(id="admin"))
+        self.assertFalse(self.ldap._is_local_user())
+
+        ldap_calls = []
+        original_ugm = LDAPPlugin._ugm
+
+        def fail_if_ldap_is_used(plugin):
+            ldap_calls.append(plugin)
+            raise AssertionError("LDAP was contacted for a local user")
+
+        LDAPPlugin._ugm = fail_if_ldap_is_used
+        try:
+            local_user = PloneUser("admin", login="admin")
+            self.assertIsNone(self.ldap.authenticateCredentials({
+                "login": "admin", "password": "secret"
+            }))
+            self.assertEqual(self.ldap.getGroupsForPrincipal(local_user), ())
+            self.assertEqual(self.ldap.getRolesForPrincipal(local_user), ())
+            self.assertEqual(self.ldap.getPropertiesForUser(local_user), {})
+            self.assertEqual(self.ldap.enumerateUsers(
+                id="admin", exact_match=True
+            ), ())
+        finally:
+            LDAPPlugin._ugm = original_ugm
+        self.assertEqual(ldap_calls, [])
 
     def test_IGroupEnumerationPlugin_id(self):
         self.assertEqual(

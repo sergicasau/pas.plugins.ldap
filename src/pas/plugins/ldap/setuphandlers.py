@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from pas.plugins.ldap.plugin import LDAPPlugin
+from Products.PluggableAuthService.interfaces import plugins as pas_interfaces
 from zope.component.hooks import getSite
 
 
@@ -38,6 +39,10 @@ def _addPlugin(pas, pluginid="pasldap"):
         if not interface.providedBy(plugin):
             continue
         pas.plugins.activatePlugin(interface, plugin.getId())
+        # Keep local accounts ahead of LDAP.  Otherwise each Basic-auth API
+        # request first opens an LDAP connection even for the local admin.
+        if interface == pas_interfaces.IAuthenticationPlugin:
+            continue
         pas.plugins.movePluginsDown(
             interface, [x[0] for x in pas.plugins.listPlugins(interface)[:-1]]
         )

@@ -146,6 +146,36 @@ class LDAPPlugin(BasePlugin):
         ids = pas.plugins.listPluginIds(iface)
         return self.getId() in ids
 
+    @security.private
+    def _is_local_user(self, id=None, login=None):
+        """Check the PAS user store directly, without querying LDAP.
+
+        PAS calls group, role and property plugins even after a different
+        plugin authenticated a local user.  In particular, API requests made
+        as the local admin must not create an LDAP connection for each call.
+        """
+        if not (id or login):
+            return False
+        pas = self._getPAS()
+        local_stores = [
+            pas._getOb("source_users", None),
+            pas._getOb("users", None),
+        ]
+        # The Zope manager can live in the application's acl_users rather
+        # than in the Plone site's source_users plugin.
+        site = getattr(pas, "aq_parent", None)
+        app = getattr(site, "aq_parent", None)
+        if app is not None and hasattr(app, "_getOb"):
+            root_pas = app._getOb("acl_users", None)
+            if root_pas is not None and root_pas is not pas and hasattr(root_pas, "_getOb"):
+                local_stores.append(root_pas._getOb("users", None))
+        for local_users in local_stores:
+            if local_users is not None and local_users.enumerateUsers(
+                id=id, login=login, exact_match=True, max_results=1
+            ):
+                return True
+        return False
+
     @property
     @security.private
     def groups_enabled(self):
@@ -220,6 +250,8 @@ class LDAPPlugin(BasePlugin):
         login = credentials.get("login")
         pw = credentials.get("password")
         if not (login and pw):
+            return default
+        if self._is_local_user(login=login):
             return default
         logger.debug("credentials: %s" % credentials)
         users = self.users
@@ -319,6 +351,8 @@ class LDAPPlugin(BasePlugin):
         default = tuple()
         if not self.is_plugin_active(pas_interfaces.IGroupsPlugin):
             return default
+        if self._is_local_user(id=principal.getId()):
+            return default
         users = self.users
         if not users:
             return default
@@ -408,6 +442,8 @@ class LDAPPlugin(BasePlugin):
                 # XXX
                 raise NotImplementedError("sequence is not supported yet.")
             kw["id"] = id
+        if exact_match and self._is_local_user(id=id, login=login):
+            return default
         users = self.users
         if not users:
             return default
@@ -436,6 +472,8 @@ class LDAPPlugin(BasePlugin):
     #
     def getRolesForPrincipal(self, principal, request=None):
         default = ()
+        if self._is_local_user(id=principal.getId()):
+            return default
         users = self.users
         if not users:
             return default
@@ -560,6 +598,8 @@ class LDAPPlugin(BasePlugin):
         ugid = user_or_group.getId()
         if not isinstance(ugid, six.text_type):
             ugid = ugid.decode("utf-8")
+        if self._is_local_user(id=ugid):
+            return default
         try:
             if self.enumerateUsers(id=ugid) or self.enumerateGroups(id=ugid):
                 return LDAPUserPropertySheet(user_or_group, self)
